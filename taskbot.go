@@ -83,14 +83,13 @@ func (taskBot *TaskBot) sortedTasks(ids []uint64) []*Task {
 	return tasks
 }
 
-func (taskBot *TaskBot) new(chatID int64, username string, text string) {
+func (taskBot *TaskBot) new(username string, text string) {
 	id := atomic.AddUint64(&taskBot.taskID, 1)
 	task := &Task{id: id, text: text, owned: &username, assignee: nil}
 
 	taskBot.taskMu.Lock()
 	defer taskBot.taskMu.Unlock()
 
-	taskBot.userChats[username] = chatID
 	taskBot.allTasks[id] = task
 	taskBot.owned[username][id] = task
 
@@ -234,6 +233,9 @@ func (taskBot *TaskBot) unassign(username string, taskID uint64) {
 }
 
 func (taskBot *TaskBot) registerUser(chatID int64, username string) {
+	taskBot.taskMu.Lock()
+	defer taskBot.taskMu.Unlock()
+
 	taskBot.userChats[username] = chatID
 	if assigned := taskBot.assigned[username]; assigned == nil {
 		taskBot.assigned[username] = make(map[uint64]*Task)
@@ -248,8 +250,13 @@ func (taskBot *TaskBot) handle(update tgbotapi.Update) {
 		return
 	}
 
+	var username string
+	if update.Message.From.UserName != "" {
+		username = "@" + update.Message.From.UserName
+	} else {
+		username = "@" + strconv.Itoa(update.Message.From.ID)
+	}
 	text := update.Message.Text
-	username := "@" + update.Message.From.UserName
 	chatID := update.Message.Chat.ID
 
 	taskBot.registerUser(chatID, username)
@@ -280,9 +287,19 @@ func (taskBot *TaskBot) handle(update tgbotapi.Update) {
 	} else if strings.HasPrefix(text, TasksCmd) {
 		taskBot.tasks(username)
 	} else if strings.HasPrefix(text, NewCmd) {
-		taskBot.new(chatID, username, text[len(NewCmd):])
+		taskBot.new(username, text[len(NewCmd):])
 	} else if strings.HasPrefix(text, OwnerCmd) {
 		taskBot.owner(username)
+	} else {
+		taskBot.send(username, `
+* /tasks
+* /new XXX YYY ZZZ - создаёт новую задачу
+* /assign_$ID - делаеть пользователя исполнителем задачи
+* /unassign_$ID - снимает задачу с текущего исполнителя
+* /resolve_$ID - выполняет задачу, удаляет её из списка
+* /my - показывает задачи, которые назначены на меня
+* /owner - показывает задачи которые были созданы мной
+`)
 	}
 }
 
