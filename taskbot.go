@@ -42,6 +42,34 @@ type Task struct {
 	text     string
 }
 
+func (task *Task) toStringOwned() string {
+	var assign string
+	if task.assignee == nil {
+		assign = fmt.Sprintf("\n/assign_%d", task.id)
+	}
+
+	return fmt.Sprintf("%d. %s by %s%s", task.id, task.text, *task.owned, assign)
+}
+
+func (task *Task) toStringMy() string {
+	return fmt.Sprintf("%d. %s by %s\n/unassign_%d /resolve_%d", task.id, task.text, *task.owned, task.id, task.id)
+}
+
+func (task *Task) toStringTasks(username string) string {
+	var assigne string
+
+	if task.assignee == nil {
+		assigne = fmt.Sprintf("\n/assign_%d", task.id)
+	} else {
+		if *task.assignee == username {
+			assigne = fmt.Sprintf("\nassignee: я\n/unassign_%d /resolve_%d", task.id, task.id)
+		} else {
+			assigne = fmt.Sprintf("\nassignee: %s", *task.assignee)
+		}
+	}
+	return fmt.Sprintf("%d. %s by %s%s", task.id, task.text, *task.owned, assigne)
+}
+
 type TaskBot struct {
 	bot    *tgbotapi.BotAPI
 	taskID uint64
@@ -107,14 +135,10 @@ func (taskBot *TaskBot) owner(username string) {
 		ids = append(ids, id)
 	}
 	tasks := taskBot.sortedTasks(ids)
-	messages := make([]string, 0, len(ids))
-	for _, task := range tasks {
-		var assign string
-		if task.assignee == nil {
-			assign = fmt.Sprintf("\n/assign_%d", task.id)
-		}
 
-		messages = append(messages, fmt.Sprintf("%d. %s by %s%s", task.id, task.text, *task.owned, assign))
+	messages := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		messages = append(messages, task.toStringOwned())
 	}
 
 	taskBot.send(username, strings.Join(messages, "\n\n"))
@@ -124,15 +148,18 @@ func (taskBot *TaskBot) my(username string) {
 	taskBot.taskMu.RLock()
 	defer taskBot.taskMu.RUnlock()
 
-	usernameTasks := taskBot.assigned[username]
-	if len(usernameTasks) == 0 {
+	tasks := taskBot.assigned[username]
+	if len(tasks) == 0 {
 		taskBot.send(username, "Нет задач")
 		return
 	}
 
-	for _, task := range usernameTasks {
-		taskBot.send(username, fmt.Sprintf("%d. %s by %s\n/unassign_%d /resolve_%d", task.id, task.text, *task.owned, task.id, task.id))
+	messages := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		messages = append(messages, task.toStringMy())
 	}
+
+	taskBot.send(username, strings.Join(messages, "\n\n"))
 }
 
 func (taskBot *TaskBot) tasks(me string) {
@@ -148,24 +175,13 @@ func (taskBot *TaskBot) tasks(me string) {
 	for id := range taskBot.allTasks {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	tasks := taskBot.sortedTasks(ids)
 
 	messages := make([]string, 0, len(taskBot.allTasks))
-	for _, taskID := range ids {
-		task := taskBot.allTasks[taskID]
-		var assigne string
-
-		if task.assignee == nil {
-			assigne = fmt.Sprintf("\n/assign_%d", task.id)
-		} else {
-			if *task.assignee == me {
-				assigne = fmt.Sprintf("\nassignee: я\n/unassign_%d /resolve_%d", task.id, task.id)
-			} else {
-				assigne = fmt.Sprintf("\nassignee: %s", *task.assignee)
-			}
-		}
-		messages = append(messages, fmt.Sprintf("%d. %s by %s%s", task.id, task.text, *task.owned, assigne))
+	for _, task := range tasks {
+		messages = append(messages, task.toStringTasks(me))
 	}
+
 	taskBot.send(me, strings.Join(messages, "\n\n"))
 }
 
@@ -173,8 +189,14 @@ func (taskBot *TaskBot) resolve(username string, taskID uint64) {
 	taskBot.taskMu.Lock()
 	defer taskBot.taskMu.Unlock()
 
-	task := taskBot.allTasks[taskID]
-	if username != *task.assignee {
+	task, found := taskBot.allTasks[taskID]
+
+	if !found {
+		taskBot.send(username, fmt.Sprintf(`Задача номер %d не найдена`, taskID))
+		return
+	}
+
+	if task.assignee == nil || username != *task.assignee {
 		taskBot.send(username, "Задача не на вас")
 		return
 	}
@@ -193,7 +215,12 @@ func (taskBot *TaskBot) assign(username string, taskID uint64) {
 	taskBot.taskMu.Lock()
 	defer taskBot.taskMu.Unlock()
 
-	task := taskBot.allTasks[taskID]
+	task, found := taskBot.allTasks[taskID]
+
+	if !found {
+		taskBot.send(username, fmt.Sprintf(`Задача номер %d не найдена`, taskID))
+		return
+	}
 
 	var prev string
 	if task.assignee != nil {
